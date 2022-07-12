@@ -1,0 +1,29 @@
+{
+    "branches": ["master"],
+    "tagFormat": "${version}",
+    "plugins": [
+        [
+            "@semantic-release/commit-analyzer", {
+                "preset": "conventionalcommits",
+            } 
+        ],
+        [
+        "@semantic-release/release-notes-generator", {
+                "preset": "conventionalcommits",
+            }
+        ], 
+        [ 
+            "@semantic-release/changelog",
+            {
+		"changelogTitle": "# Changelog\n\nAll notable changes to this DevOps project will be documented in this file."
+            }
+        ],
+        [
+            "@semantic-release/git",
+            {
+                "message": "chore: Release ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
+            }
+        ]
+    ]
+}
+

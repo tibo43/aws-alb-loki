@@ -1,0 +1,90 @@
+stages:
+- ecr
+- docker
+- lambda
+- changelog
+- destroy
+
+variables:
+  BACKEND_STATE_S3_BUCKET: "aws_bucket_name"
+  BACKEND_STATE_S3_REGION: "aws_region"
+  BACKEND_STATE_S3_PREFIX: "aws_bucket_prefix"
+  BACKEND_STATE_DYNAMODB: "aws_dynamodb_name"
+  ECR_PRIVATE_REGISTRY: "aws_ecr_private"
+
+default:
+  image: 
+    name: hashicorp/terraform:1.1.5
+    entrypoint: [""]
+
+ecr:
+  stage: ecr
+  script:
+    - cd .terraform/ecr
+    - terraform init -backend-config="bucket=$BACKEND_STATE_S3_BUCKET" -backend-config="key=$BACKEND_STATE_S3_PREFIX/$CI_PROJECT_NAME/ecr.tfstate" -backend-config="region=$BACKEND_STATE_S3_REGION" -backend-config="dynamodb_table=$BACKEND_STATE_DYNAMODB"
+    - terraform plan -out=ecr.plan -var "name=$CI_PROJECT_NAME" -var-file=ecr.tfvars
+    - terraform apply ecr.plan
+  only:
+    - master
+
+docker:
+  stage: docker
+  image: tibo43/docker:0.0.1
+  services:
+    - docker:20.10.12-dind
+  before_script:
+    - aws ecr get-login-password --region $BACKEND_STATE_S3_REGION | docker login --username AWS --password-stdin $ECR_PRIVATE_REGISTRY
+  script:
+    - docker build -f Dockerfile -t $ECR_PRIVATE_REGISTRY/$CI_PROJECT_NAME:latest .
+    - docker push $ECR_PRIVATE_REGISTRY/$CI_PROJECT_NAME:latest
+    - echo "DOCKER_DIGEST=$(docker images --no-trunc --quiet $ECR_PRIVATE_REGISTRY/$CI_PROJECT_NAME:latest | sed 's/sha256://')" > docker.env
+  artifacts:
+    reports:
+      dotenv: docker.env
+  only:
+    - master
+
+lambda:
+  stage: lambda
+  script:
+    - cd .terraform/lambda
+    - terraform init -backend-config="bucket=$BACKEND_STATE_S3_BUCKET" -backend-config="key=$BACKEND_STATE_S3_PREFIX/$CI_PROJECT_NAME/lambda.tfstate" -backend-config="region=$BACKEND_STATE_S3_REGION" -backend-config="dynamodb_table=$BACKEND_STATE_DYNAMODB"
+    - terraform plan -out=lambda.plan -var-file=../../lambda.tfvars -var "image_uri=$ECR_PRIVATE_REGISTRY/$CI_PROJECT_NAME:latest" -var "source_code_hash=$DOCKER_DIGEST"
+    - terraform apply lambda.plan
+  dependencies:
+    - docker
+  only:
+    - master
+
+changelog:
+  image: node:17-buster-slim
+  stage: changelog
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends git-core ca-certificates
+    - npm install -g semantic-release @semantic-release/gitlab @semantic-release/changelog conventional-changelog-conventionalcommits @semantic-release/commit-analyzer @semantic-release/git
+  script:
+    - semantic-release
+  only:
+    - master
+
+destroy-ecr:
+  stage: destroy
+  when: manual
+  script:
+    - cd .terraform/ecr
+    - terraform init -backend-config="bucket=$BACKEND_STATE_S3_BUCKET" -backend-config="key=$BACKEND_STATE_S3_PREFIX/$CI_PROJECT_NAME/ecr.tfstate" -backend-config="region=$BACKEND_STATE_S3_REGION" -backend-config="dynamodb_table=$BACKEND_STATE_DYNAMODB"
+    - terraform plan -destroy -out=ecr.plan -var "name=$CI_PROJECT_NAME" -var-file=ecr.tfvars
+    - terraform apply ecr.plan
+  only:
+    - master
+
+destroy-lambda:
+  stage: destroy
+  when: manual
+  script:
+    - cd .terraform/lambda
+    - terraform init -backend-config="bucket=$BACKEND_STATE_S3_BUCKET" -backend-config="key=$BACKEND_STATE_S3_PREFIX/$CI_PROJECT_NAME/lambda.tfstate" -backend-config="region=$BACKEND_STATE_S3_REGION" -backend-config="dynamodb_table=$BACKEND_STATE_DYNAMODB"
+    - terraform plan -destroy -out=lambda.plan -var-file=../../lambda.tfvars -var "image_uri=$ECR_PRIVATE_REGISTRY/$CI_PROJECT_NAME:latest"
+    - terraform apply lambda.plan
+  only:
+    - master
